@@ -1,0 +1,19 @@
+- name: Transfer prometheus.service
+  copy:
+    src: prometheus.service
+    dest: /lib/systemd/system/
+    owner: root
+    group: root
+    mode: 0755
+
+- name: Reload systemctl
+  shell: systemctl daemon-reload
+
+- name: Enable service
+  shell: systemctl enable prometheus.service
+
+- name: Start service
+  shell: systemctl start prometheus.service
+
+- name: Restart service
+  shell: systemctl restart prometheus.service

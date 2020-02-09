@@ -1,0 +1,15 @@
+- hosts: all
+  roles:
+  - common
+- hosts: aqi
+  roles:
+  - aqi
+- hosts: bme280
+  roles:
+  - bme280
+- hosts: sensehat
+  roles:
+  - sensehat
+- hosts: all
+  roles:
+  - common-close

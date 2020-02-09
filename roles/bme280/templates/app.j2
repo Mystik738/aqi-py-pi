@@ -1,0 +1,37 @@
+#!/usr/bin/python3
+# coding: utf8
+from prometheus_client import start_http_server, Summary, Gauge
+from datetime import datetime
+import time, bme280, smbus2
+
+temperatureGauge = Gauge('temperature', '', ['source'])
+humidityGauge = Gauge('humidity', '', ['source'])
+pressureGauge = Gauge('pressure', '', ['source'])
+
+source = '{{ source }}'
+temp_adj = -0.0
+
+def calc_metrics():
+  try:
+    port = 1
+    address = 0x76
+    bus = smbus2.SMBus(port)
+
+    calibration_params = bme280.load_calibration_params(bus, address)
+
+    data = bme280.sample(bus, address, calibration_params)
+
+    temperature = float(data.temperature) * 9.0 / 5.0 + 32.0
+    #This is a poorman's adjustment, but the sensors seem to output 3 F high
+    temperature = temperature + temp_adj
+    temperatureGauge.labels(source).set(temperature)
+    humidityGauge.labels(source).set(data.humidity)
+    pressureGauge.labels(source).set(data.pressure)
+  except:
+    print("Error occurred connecting to sensor")
+
+if __name__ == '__main__':
+  start_http_server(8000)
+  while True:
+    calc_metrics()
+    time.sleep(1.0)

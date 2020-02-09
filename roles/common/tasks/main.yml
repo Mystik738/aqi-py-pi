@@ -1,0 +1,32 @@
+---
+- name: Get I2C Setting
+  shell: "raspi-config nonint get_i2c 0"
+  register: I2C
+  changed_when: I2C == 1
+
+# https://github.com/mohankumargupta/raspberrypi-ansible/blob/master/raspbian-setup.yml
+- name: Enable I2C
+  shell: "raspi-config nonint do_i2c 0"
+  when: I2C == 1
+
+- name: Reboot
+  reboot:
+  when: I2C == 1
+
+- name: apt-get update
+  apt:
+    update_cache: yes
+    autoclean: yes
+    autoremove: yes
+    cache_valid_time: 86400
+
+- name: apt-get upgrade
+  apt:
+    upgrade: full
+
+- name: install python packages
+  apt:
+    pkg: 
+    - python3
+    - python3-pip
+    state: present

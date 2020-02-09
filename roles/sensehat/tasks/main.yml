@@ -1,0 +1,22 @@
+---
+- name: install python packages
+  apt:
+    pkg: 
+    - sense-hat
+    state: present
+
+- name: install pip packages
+  pip:
+    executable: pip3
+    name: 
+    - prometheus_client
+    state: present
+
+- name: Transfer app.py
+  template:
+    src: app.j2
+    dest: /home/pi/app.py
+    owner: pi
+    group: pi
+    mode: 0755
+  register: apppy

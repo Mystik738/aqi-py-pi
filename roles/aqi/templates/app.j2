@@ -1,0 +1,239 @@
+#!/usr/bin/python3
+# coding: utf8
+# "DATASHEET": http://cl.ly/ekot
+# https://gist.github.com/kadamski/92653913a53baf9dd1a8
+from __future__ import print_function
+from prometheus_client import start_http_server, Summary, Gauge
+import serial, struct, sys, time, json, binascii
+from datetime import datetime
+import bme680
+
+pm25Gauge = Gauge('pm25', '', ['source'])
+pm10Gauge = Gauge('pm10', '', ['source'])
+aqi25Gauge = Gauge('aqi25', '', ['source'])
+aqi10Gauge = Gauge('aqi10', '', ['source'])
+
+temperatureGauge = Gauge('temperature', '', ['source'])
+humidityGauge = Gauge('humidity', '', ['source'])
+pressureGauge = Gauge('pressure', '', ['source'])
+gasGauge = Gauge('gasResistance','',['source'])
+
+source = '{{ source }}'
+temp_adj = -3.0
+
+DEBUG = 0
+CMD_MODE = 2
+CMD_QUERY_DATA = 4
+CMD_DEVICE_ID = 5
+CMD_SLEEP = 6
+CMD_FIRMWARE = 7
+CMD_WORKING_PERIOD = 8
+MODE_ACTIVE = 0
+MODE_QUERY = 1
+
+ser = serial.Serial()
+ser.port = "/dev/ttyUSB0"
+ser.baudrate = 9600
+
+byte, data = 0, ""
+
+def dump(d, prefix=''):
+  print(prefix, " ".join(map("{:02x}".format, bytearray(d))))
+
+def construct_command(cmd, data=[]):
+  assert len(data) <= 12
+  data += [0, ] * (12 - len(data))
+  checksum = (sum(data) + cmd - 2) % 256
+  ret = b'\xaa\xb4' + bytes([cmd])
+  ret += bytes(data)
+  ret += b'\xff\xff' + bytes([checksum]) + b'\xab'
+
+  if DEBUG:
+    dump(ret, '> ')
+  return ret
+
+def process_data(d):
+  r = struct.unpack('<HHxxBB', d[2:])
+  pm25 = r[0] / 10.0
+  pm10 = r[1] / 10.0
+  checksum = sum(v for v in d[2:8]) % 256
+  return [pm25, pm10]
+  # print("PM 2.5: {} μg/m^3  PM 10: {} μg/m^3 CRC={}".format(pm25, pm10, "OK" if (checksum==r[2] and r[3]==0xab) else "NOK"))
+
+def process_version(d):
+  r = struct.unpack('<BBBHBB', d[3:])
+  checksum = sum(ord(v) for v in d[2:8]) % 256
+  print("Y: {}, M: {}, D: {}, ID: {}, CRC={}".format(r[0], r[1], r[2], hex(r[3]),
+                                                     "OK" if (checksum == r[4] and r[5] == 0xab) else "NOK"))
+
+def read_response():
+  byte = 0
+  while byte != b'\xaa':
+    byte = ser.read(size=1)
+
+  d = ser.read(size=9)
+
+  if DEBUG:
+    dump(d, '< ')
+  return byte + d
+
+def cmd_set_mode(mode=MODE_QUERY):
+  ser.write(construct_command(CMD_MODE, [0x1, mode]))
+  read_response()
+
+def cmd_query_data():
+  ser.write(construct_command(CMD_QUERY_DATA))
+  d = read_response()
+  values = []
+  if d[1] == 192:
+    values = process_data(d)
+  return values
+
+def cmd_set_sleep(sleep=1):
+  mode = 0 if sleep else 1
+  ser.write(construct_command(CMD_SLEEP, [0x1, mode]))
+  read_response()
+
+def cmd_set_working_period(period):
+  ser.write(construct_command(CMD_WORKING_PERIOD, [0x1, period]))
+  read_response()
+
+def cmd_firmware_ver():
+  ser.write(construct_command(CMD_FIRMWARE))
+  d = read_response()
+  process_version(d)
+
+def cmd_set_id(id):
+  id_h = (id >> 8) % 256
+  id_l = id % 256
+  ser.write(construct_command(CMD_DEVICE_ID, [0] * 10 + [id_l, id_h]))
+  read_response()
+
+def calcAQIpm25(pm25):
+  pm1 = 0
+  pm2 = 12
+  pm3 = 35.4
+  pm4 = 55.4
+  pm5 = 150.4
+  pm6 = 250.4
+  pm7 = 350.4
+  pm8 = 500.4
+
+  aqi1 = 0
+  aqi2 = 50
+  aqi3 = 100
+  aqi4 = 150
+  aqi5 = 200
+  aqi6 = 300
+  aqi7 = 400
+  aqi8 = 500
+
+  aqipm25 = 0
+
+  if (pm25 >= pm1 and pm25 <= pm2) :
+    aqipm25 = ((aqi2 - aqi1) / (pm2 - pm1)) * (pm25 - pm1) + aqi1
+  elif (pm25 >= pm2 and pm25 <= pm3) :
+    aqipm25 = ((aqi3 - aqi2) / (pm3 - pm2)) * (pm25 - pm2) + aqi2
+  elif (pm25 >= pm3 and pm25 <= pm4) :
+    aqipm25 = ((aqi4 - aqi3) / (pm4 - pm3)) * (pm25 - pm3) + aqi3
+  elif (pm25 >= pm4 and pm25 <= pm5) :
+    aqipm25 = ((aqi5 - aqi4) / (pm5 - pm4)) * (pm25 - pm4) + aqi4
+  elif (pm25 >= pm5 and pm25 <= pm6) :
+    aqipm25 = ((aqi6 - aqi5) / (pm6 - pm5)) * (pm25 - pm5) + aqi5
+  elif (pm25 >= pm6 and pm25 <= pm7) :
+    aqipm25 = ((aqi7 - aqi6) / (pm7 - pm6)) * (pm25 - pm6) + aqi6
+  elif (pm25 >= pm7 and pm25 <= pm8) :
+    aqipm25 = ((aqi8 - aqi7) / (pm8 - pm7)) * (pm25 - pm7) + aqi7
+	
+  return round(aqipm25)
+
+def calcAQIpm10(pm10):
+  pm1 = 0
+  pm2 = 54
+  pm3 = 154
+  pm4 = 254
+  pm5 = 354
+  pm6 = 424
+  pm7 = 504
+  pm8 = 604
+
+  aqi1 = 0
+  aqi2 = 50
+  aqi3 = 100
+  aqi4 = 150
+  aqi5 = 200
+  aqi6 = 300
+  aqi7 = 400
+  aqi8 = 500
+
+  aqipm10 = 0
+
+  if (pm10 >= pm1 and pm10 <= pm2) :
+    aqipm10 = ((aqi2 - aqi1) / (pm2 - pm1)) * (pm10 - pm1) + aqi1
+  elif (pm10 >= pm2 and pm10 <= pm3) :
+    aqipm10 = ((aqi3 - aqi2) / (pm3 - pm2)) * (pm10 - pm2) + aqi2
+  elif (pm10 >= pm3 and pm10 <= pm4) :
+    aqipm10 = ((aqi4 - aqi3) / (pm4 - pm3)) * (pm10 - pm3) + aqi3
+  elif (pm10 >= pm4 and pm10 <= pm5) :
+    aqipm10 = ((aqi5 - aqi4) / (pm5 - pm4)) * (pm10 - pm4) + aqi4
+  elif (pm10 >= pm5 and pm10 <= pm6) :
+    aqipm10 = ((aqi6 - aqi5) / (pm6 - pm5)) * (pm10 - pm5) + aqi5
+  elif (pm10 >= pm6 and pm10 <= pm7) :
+    aqipm10 = ((aqi7 - aqi6) / (pm7 - pm6)) * (pm10 - pm6) + aqi6
+  elif (pm10 >= pm7 and pm10 <= pm8) :
+    aqipm10 = ((aqi8 - aqi7) / (pm8 - pm7)) * (pm10 - pm7) + aqi7
+	
+  return round(aqipm10)
+
+def calc_metrics():
+  ser.open()
+  ser.flushInput()
+  
+  try:
+      sensor = bme680.BME680(bme680.I2C_ADDR_PRIMARY)
+  except IOError:
+      sensor = bme680.BME680(bme680.I2C_ADDR_SECONDARY)
+  sensor.set_humidity_oversample(bme680.OS_2X)
+  sensor.set_pressure_oversample(bme680.OS_4X)
+  sensor.set_temperature_oversample(bme680.OS_8X)
+  sensor.set_filter(bme680.FILTER_SIZE_3)
+  sensor.set_gas_status(bme680.ENABLE_GAS_MEAS)
+
+  sensor.set_gas_heater_temperature(320)
+  sensor.set_gas_heater_duration(150)
+  sensor.select_gas_heater_profile(0)
+
+  values = cmd_query_data()
+
+  if values is not None:
+    pm25=values[0]
+    pm25Gauge.labels(source).set(pm25)
+    pm10=values[1]
+    pm10Gauge.labels(source).set(pm10)
+    aqi25=calcAQIpm25(values[0])
+    aqi25Gauge.labels(source).set(aqi25)
+    aqi10=calcAQIpm10(values[1])
+    aqi10Gauge.labels(source).set(aqi10)
+
+  try:
+    sensor.get_sensor_data()
+    humidityGauge.labels(source).set(sensor.data.humidity)
+    temperature = float(sensor.data.temperature) * 9.0 / 5.0 + 32.0
+    #This is a poorman's adjustment, but the sensors seem to output 3 F high
+    temperature = temperature + temp_adj
+    temperatureGauge.labels(source).set(temperature)
+    pressureGauge.labels(source).set(sensor.data.pressure)
+  except:
+    print("Error reading")  
+
+  #if sensor.data.heat_stable:
+  gasGauge.labels(source).set(sensor.data.gas_resistance)
+  
+  ser.close()
+
+if __name__ == '__main__':
+    # Start up the server to expose the metrics.
+    start_http_server(8000)
+    while True:
+      calc_metrics()
+      time.sleep(1.0)
