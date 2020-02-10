@@ -27,6 +27,8 @@ def calc_metrics():
     temperatureGauge.labels(source).set(temperature)
     humidityGauge.labels(source).set(data.humidity)
     pressureGauge.labels(source).set(data.pressure)
+
+    bus.close()
   except:
     print("Error occurred connecting to sensor")
 
